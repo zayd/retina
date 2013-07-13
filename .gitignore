@@ -1,0 +1,6 @@
+.DS_Store
+images/
+*.jpg
+*.png
+*.gif
+saliency-libs/
