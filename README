@@ -4,6 +4,7 @@ Project to implement network that learns retina's log-polar tiling of retinal ga
 x Done
 
 Critical
+[*] - Pixel list to array method
 [*] - inference based reconstruction (show log-polar vs. uniform sampling)
 [*] - information theoretic argument with (log-polar vs uniform)
 [*] - optimize inference based reconstruction
@@ -13,7 +14,7 @@ Nice Things
 [*] - computer covariance matrix using cython?
 [*] - optimize saliency map
 [*] - fix noise: SNR?
-[*] - fix parameters of log lattice
+[x] - fix parameters of log lattice
 [*] - better way to move gaze
 
 Future
