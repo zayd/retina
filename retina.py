@@ -45,7 +45,7 @@ class Retina(object):
 
     elif self.type == 'log-polar':
       """
-      Based on Sandini & Tagliasco 1980 model for retina sampling lattice
+      Based on Sandini & Tagliasco 1980 model for retinal sampling lattice
       radius = scale*2*pi/3N * eccentricity. Where N is the # elements at a given
       eccentricity. scale factor is own addition to make things work at small level.
 
@@ -61,7 +61,7 @@ class Retina(object):
       eccentricity = []
       size = []
       edge = 180
-      for r in range(int(self.sqrt_N)):
+      for r in range(self.sqrt_N):
         # Fill inwards & RGCs circle edges touch prev edge
         e = edge/(scale*(2.0*np.pi)/(3.0*len(encircle)) + 1.0)
         s = scale*(2.0*np.pi*e)/(3.0*len(encircle))
@@ -70,33 +70,21 @@ class Retina(object):
         edge = edge - 2.0*s
 
       pixel_per_deg = radius/180.0 # pixels per eccentricity degree
-      radii = [e * pixel_per_deg for e in eccentricity]
-      size = [s * pixel_per_deg for s in size]
-
-      radii = map(int, map(np.ceil, radii))
-      size = map(int, map(np.ceil, size))
+      radii = [int(np.ceil(e * pixel_per_deg)) for e in eccentricity]
+      size = [int(np.ceil(s * pixel_per_deg)) for s in size]
 
       if self.fovea_cutoff == None:
         self.fovea_cutoff = (3.0*len(encircle))/(scale*2.0*np.pi) * np.sqrt(1.0/np.pi) * pixel_per_deg
 
-      def sides():
-        for r,s in zip(radii,size):
-          if r >= self.fovea_cutoff:
-            for theta in encircle:
-                self.receptors.append(Receptor(np.floor(r*np.cos(theta)), np.floor(r*np.sin(theta)),
-                'circle', int(np.ceil(max(1, s))), outer=(r==radii[0])))
-          else:
-            return r
-        return r
+      for r,s in filter(lambda (r,s): r >= self.fovea_cutoff, zip(radii,size)):
+          for theta in encircle:
+              self.receptors.append(Receptor(np.floor(r*np.cos(theta)), np.floor(r*np.sin(theta)),
+              'circle', int(np.ceil(max(1, s))), outer=(r==radii[0])))
 
-      def fovea():
-        for i in range(-self.fovea_cutoff+1,self.fovea_cutoff):
-          for j in range(-self.fovea_cutoff+1,self.fovea_cutoff):
-            if np.sqrt(i**2 + j**2) < self.fovea_cutoff:
-              self.receptors.append(Receptor(i, j, 'circle', 1, outer='False'))
-
-      sides()
-      fovea()
+      for i in range(-self.fovea_cutoff+1,self.fovea_cutoff):
+        for j in range(-self.fovea_cutoff+1,self.fovea_cutoff):
+          if np.sqrt(i**2 + j**2) < self.fovea_cutoff:
+            self.receptors.append(Receptor(i, j, 'circle', 1, outer='False'))
 
   def sample(self, center_x, center_y, image):
     output = np.zeros(self.N)
@@ -120,7 +108,6 @@ class Retina(object):
     Sample saliency map and move in *outer* direction with highest saliency.
     Look at saliency for outer level of receptors
     """
-
     avg_saliency = 0
     for receptor in self.receptors:
       if receptor.outer == True:
@@ -135,8 +122,9 @@ class Retina(object):
     W = np.zeros((2*self.radius,2*self.radius,len(self.receptors)))
     for i,receptor in enumerate(self.receptors):
       pixels = receptor.sample_pixels_pos(0,0)
-      W[np.append(pixels,np.tile([[i]],(pixels.shape[0],1)))] = 1
-    return W
+      for p in pixels:
+        W[p[0]+self.radius-1, p[1]+self.radius-1, i] = 1
+    return W.reshape(2*self.radius*2*self.radius,len(self.receptors))
 
 class Receptor(object):
   def __init__(self, x, y, type, radius, outer):
@@ -244,10 +232,11 @@ def main():
   #S = np.zeros((N,fixations)) # Observation matrix of samples
 
   logp = Retina(radius, N, 'log-polar', fovea_cutoff=7)
-  logp.plot_lattice()
+  #logp.plot_lattice()
+  plt.imshow(np.sum(logp.convert_to_array()[:,1].reshape(2*radius,2*radius,1), axis=2), cmap = 'gray', interpolation='nearest')
 
-  uniform = Retina(radius, 100, 'uniform')
-  uniform.plot_lattice()
+  #uniform = Retina(radius, 100, 'uniform')
+  #uniform.plot_lattice()
   #start = np.floor(image_size * np.random.rand(2,1) * \
   #((image_size - 2*radius)/float(image_size)) + radius)
   #S[:,i] = logp.sample(int(start[0]), int(start[1]), img)

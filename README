@@ -4,7 +4,7 @@ Project to implement network that learns retina's log-polar tiling of retinal ga
 x Done
 
 Critical
-[*] - Pixel list to array method
+[x] - Pixel list to array method
 [*] - inference based reconstruction (show log-polar vs. uniform sampling)
 [*] - information theoretic argument with (log-polar vs uniform)
 [*] - optimize inference based reconstruction
