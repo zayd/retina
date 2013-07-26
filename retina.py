@@ -1,25 +1,16 @@
 import random
+import scipy.io
 import numpy as np
 import array
 import matplotlib.pyplot as plt
 
 import skimage.transform as skt
-import skimage.filter as skf
+#import skimage.filter as skf
 
 from joblib import Memory
 memory = Memory(cachedir='/tmp/retina', verbose=0)
 
-def memoize(f):
-  cache= {}
-  def memf(*x):
-    if x not in cache:
-      cache[x] = f(*x)
-    return cache[x]
-  return memf
-
-# class Gaze(object):
-# def __init__(self):
-#   return
+from sparsenet import sparsify
 
 class Retina(object):
   def __init__(self, radius=100, N=144, type='uniform', fovea_cutoff=None):
@@ -28,7 +19,7 @@ class Retina(object):
     self.sqrt_N = np.sqrt(self.N).astype(int)
     self.receptors = [] # List of receptor objects
     self.type = type
-    self.fovea_cutoff = fovea_cutoff # If needed
+    self.fovea_cutoff = fovea_cutoff # (optional)
 
     if self.type == 'uniform':
       # Top left corner
@@ -67,7 +58,7 @@ class Retina(object):
         s = scale*(2.0*np.pi*e)/(3.0*len(encircle))
         eccentricity.append(e)
         size.append(s)
-        edge = edge - 2.0*s
+        edge = edge - 1.0*s
 
       pixel_per_deg = radius/180.0 # pixels per eccentricity degree
       radii = [int(np.ceil(e * pixel_per_deg)) for e in eccentricity]
@@ -86,11 +77,46 @@ class Retina(object):
           if np.sqrt(i**2 + j**2) < self.fovea_cutoff:
             self.receptors.append(Receptor(i, j, 'circle', 1, outer='False'))
 
+    self._convert_to_array()
+
+  def _convert_to_array(self):
+    """
+    Convert fom receptor list representation to array of receptive fields
+    """
+    self.W = np.zeros((2*self.radius,2*self.radius,len(self.receptors)))
+    for i,receptor in enumerate(self.receptors):
+      pixels = receptor.sample_pixels_pos(0,0)
+      normalizing = len(pixels)
+      for p in pixels:
+        self.W[p[0]+self.radius-1, p[1]+self.radius-1, i] = 1.0/normalizing * (1/(np.abs(p[0]+p[1])+1))
+    # Reshape to make 2-D
+    self.W = self.W.reshape(2*self.radius*2*self.radius,len(self.receptors))
+
   def sample(self, center_x, center_y, image):
+    """
+    Return vector of samples (averaged photoreceptor values for each RGC)
+    """
     output = np.zeros(self.N)
     for i,receptor in enumerate(self.receptors):
       output[i] = receptor.sample_pixels(center_x, center_y, image)
     return output
+
+  def reconstruct(self, image_patch, lambdav, method='lstsq'):
+    """
+    Assume linear generative & sparse model. Learn coefficients to reconstruct
+    image patch.
+    image: Image patch
+    lambdav: Sparsity constraint
+    """
+
+    I = image_patch.reshape(image_patch.shape[0]*image_patch.shape[1],)
+
+    if method == 'lstsq':
+      a = np.linalg.lstsq(self.W,I)
+    elif method == 'l1':
+      a = sparsify(image_patch.reshape(image_patch.shape[0]*image_patch.shape[1],1), self.W, lambdav)
+
+    return np.dot(self.W,a[0]).reshape(image_patch.shape[0],image_patch.shape[1])
 
   def plot_lattice(self):
     fig, ax = plt.subplots()
@@ -102,6 +128,7 @@ class Retina(object):
       ax.scatter(pixels[:,0], pixels[:,1], s=1, alpha=0.2)
 
     plt.draw()
+
 
   def next_fixation(self, center_x, center_y, saliency_map):
     """
@@ -117,22 +144,18 @@ class Retina(object):
 
     return direction
 
-  def convert_to_array(self):
-    """Convert fom receptor list representation to array of receptive fields"""
-    W = np.zeros((2*self.radius,2*self.radius,len(self.receptors)))
-    for i,receptor in enumerate(self.receptors):
-      pixels = receptor.sample_pixels_pos(0,0)
-      for p in pixels:
-        W[p[0]+self.radius-1, p[1]+self.radius-1, i] = 1
-    return W.reshape(2*self.radius*2*self.radius,len(self.receptors))
-
 class Receptor(object):
-  def __init__(self, x, y, type, radius, outer):
+  def __init__(self, x, y, type, radius, outer=False, noise=False):
     self.x = x
     self.y = y
     self.type = type # circle
     self.radius = radius
     self.outer = outer # whether receptor on boundary or not
+    self.noise = noise
+    self.pixels = _circle_pixels(self.radius)
+    if self.noise != False:
+      self.mean = self.noise[0]
+      self.std = self.noise[1] # If there is noise, std and mean of noise as tuple
 
   def abs_pos(self):
     return (self.x, self.y)
@@ -142,21 +165,26 @@ class Receptor(object):
 
   def sample_pixels_pos(self, center_x, center_y):
     # Returns list of pixels to sample given center_x and center_y
-    if self.type == 'point':
-      return (self.x + center_x, self.y + center_y)
-
-    elif self.type == 'circle':
-      pixels = _circle_pixels(self.radius)
-      return pixels + np.tile([[self.x + center_x, self.y + center_y]],(pixels.shape[0],1))
+    if self.type == 'circle':
+      return self.pixels + np.tile([[self.x + center_x, self.y + center_y]],(self.pixels.shape[0],1))
 
   def sample_pixels(self, center_x, center_y, image):
-    # TODO: make work with 'point'
     output = 0
-    pixels = self.sample_pixels_pos(center_x, center_y)
-    for pixel in pixels:
+    sampling_pixels = self.sample_pixels_pos(center_x, center_y)
+
+    for pixel in sampling_pixels:
       output = output + image[int(pixel[0]), int(pixel[1])]
 
-    return output/float(len(pixels))
+      if self.noise != False:
+        output = output + self.std * np.random.randn() + self.mean
+
+    return output/float(len(sampling_pixels))
+
+  def weights(self):
+    if self.type == 'circle':
+      return np.ones(len(self.pixels))/float(len(self.pixels))
+    else:
+      return None
 
 @memory.cache
 def _circle_pixels(radius):
@@ -168,113 +196,44 @@ def _circle_pixels(radius):
         pixels = np.append(pixels,[[i,j]], axis = 0)
   return pixels[1:,:]
 
+def preprocess(filename, database='vanhateran',log=False, scale=1):
+    # Preprocess Van Hateran Natural Images
+    R = 1024
+    C = 1536
+    extra = (C-R)/2
 
-def preprocess(filename):
-  # Preprocess Van Hateran Natural Images
-  R = 1024
-  C = 1536
-  extra = (C-R)/2
+    with open(filename, 'rb') as handle:
+      s = handle.read()
+    arr = array.array('H', s)
+    arr.byteswap()
+    img = np.array(arr, dtype='uint16').reshape(R, C)
 
-  fin = open(filename, 'rb')
-  s = fin.read()
-  fin.close()
-  arr = array.array('H', s)
-  arr.byteswap()
-  img = np.array(arr, dtype='uint16').reshape(R,C)
-  img = img[:,extra-1:C-extra-1] # crop to make square
-  return img
+    img = img[:,extra-1:C-extra-1] # crop to make square
 
-def gist(image, scale=16):
-  return skt.pyramid_expand(tuple(skt.pyramid_gaussian(image, downscale = scale))[1], upscale = scale)
+    # Downsample to 128x128
+    #if scale != 1:
+    #  print "Scaling by factor: " + str(scale)
+    #  img = tuple(skt.pyramid_gaussian(img, downscale=scale))[1]
 
-def saliency(image):
-  #from src.utils import OpencvIo
-  from src.saliency_map import SaliencyMap
+    # Take log10 transform of data to make Gaussian
+    #if log == True:
+    #  img[img == 0] = 1
+    #  img = np.log10(img)
 
-  # Black and white image so copy over to all channels
-  image = np.dstack((image, image, image))
-  image = image.astype('float32')
-  sm = SaliencyMap(image)
-  return sm.map
+    # Zero mean and unit variance
+    img = img.reshape(R*R/scale**2,1)
+    #img = img - np.mean(img)
+    #img = img/np.std(img)
 
-def main():
-  fixations = 5  # Number of fixations allowed
-  radius = 100 # Radius size of eye (in pixels)
-  N = 144 # Number of retinal ganglion cells
+    return img.reshape(R/scale,R/scale)
 
-  image_size = 1024
+def generate_epic(image):
+  size = 10
+  noise = np.random.random_sample((size*2,size*2)) * 5
 
-  #for i in range(1):
-    #img = preprocess('./images/imk04212.imc')
-    #plt.imshow(img, cmap = 'gray', interpolation='nearest')
-    # img=mpimg.imread('./images/1.jpg')
+  noisy = image.copy()
+  # Starting: 64,20
+  noisy[64-size:64+size, 20-size:20+size] = noisy[64-size:64+size, 20-size:20+size] + noise
 
-    #sm = saliency(gist(img))
-    #plt.imshow(img, cmap='gray', interpolation='nearest')
-    #plt.show()
+  return(image, noisy)
 
-  #logp = Retina(radius, N, 'log-polar')
-  #print "done"
-  #logp.plot_lattice()
-  #print "done"
-
-  # to do fix noise: SNR?
-  # log  polar sampling lattice - why so much power in center?
-  # fix parameters of log lattice
-  # how to move gaze - difference of neighboring samples?
-  # non constant weight average in receptive fields
-
-  # optimizing photoreceptors - greedy approach, choose one at a time
-
-  # frank warblen
-  # attentional search
-
-  #S = np.zeros((N,fixations)) # Observation matrix of samples
-
-  logp = Retina(radius, N, 'log-polar', fovea_cutoff=7)
-  #logp.plot_lattice()
-  plt.imshow(np.sum(logp.convert_to_array()[:,1].reshape(2*radius,2*radius,1), axis=2), cmap = 'gray', interpolation='nearest')
-
-  #uniform = Retina(radius, 100, 'uniform')
-  #uniform.plot_lattice()
-  #start = np.floor(image_size * np.random.rand(2,1) * \
-  #((image_size - 2*radius)/float(image_size)) + radius)
-  #S[:,i] = logp.sample(int(start[0]), int(start[1]), img)
-  # moving to area with high saliency
-  # start = logp.receptors[np.argmax(S[:,i], axis=0)].rel_pos(start[0], start[1])
-  #print start
-  #print logp.next_fixation(int(start[0]), int(start[1]), sm)
-
-
-
-  """
-  logp.plot_lattice()
-
-  S = np.zeros((N,fixations)) # Observation matrix of samples
-  for i in range(fixations):
-    # Choose random start point (buffer = radius/2 + 2 pixels border)
-    start = np.floor(image_size * np.random.rand(2,1) * \
-    ((image_size - 2*radius)/float(image_size)) + radius)
-    S[:,i] = logp.sample(start[0], start[1], img)
-    # moving to area with high power
-    # start = logp.receptors[np.argmax(S[:,i], axis=0)].rel_pos(start[0], start[1])
-    print start
-
-  m = np.mean(S,1).reshape(N, 1)
-  C = 1/float(fixations) * np.dot(S - np.dot(m, np.ones((1,fixations))),
-    (S - np.dot(m, np.ones((1,fixations)))).T)
-
-  # pg 483, Haykin
-  sample_entropy = 0.5 * (N + N * np.log(2*np.pi) + np.linalg.slogdet(C)[1])
-  print sample_entropy
-
-  # img_vector = img.reshape(1024*1535)
-  # finding eig decomposition of http://www.mathworks.com/matlabcentral/newsreader/view_thread/320655
-
-  # hist, bins = np.histogram(r,bins = 256)
-  # width = 0.7*(bins[1]-bins[0])
-  # center = (bins[:-1]+bins[1:])/2
-  # plt.bar(center, hist, align = 'center', width = width)
-  # plt.show()
-
-  """

@@ -1,0 +1,11 @@
+Implementation of Retinal Ganglion Cell receptive fields using "Synaptic energy eﬃciency in retinal processing"
+Vincent and Baddeley 2003
+
+* To Do
+x Done
+
+Critical
+[*] - Implement learning using Theano
+[*] - Noise?
+[*] - Include optical blur (essentially Gaussian weight) - as Toeplitz matrix
+
