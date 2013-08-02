@@ -1,5 +1,5 @@
 """
-Experiment to test correllation of output of a center-surround filter
+Experiment to test correlation of output of a center-surround filter
 with entropy of pixels of  image patch
 """
 import numpy as np
