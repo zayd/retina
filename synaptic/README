@@ -1,4 +1,4 @@
-Implementation of Retinal Ganglion Cell receptive fields using "Synaptic energy eﬃciency in retinal processing"
+Implementation of Retinal Ganglion Cell receptive fields using "Synaptic energy eﬃciency in retinal processing". Using separate linear encoder and decoder matrices.
 Vincent and Baddeley 2003
 
 * To Do
