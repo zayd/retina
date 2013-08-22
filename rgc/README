@@ -8,6 +8,8 @@ Critical
 [*] - Learn updates for G matrix (how does it affect parameters - taylor series expansion, update first order)
   [x] - Update for a 
   [*] - Update for b... weird.
+[*] - Fix theano to compute update in function
+[*] - Add time convolution
 [*] - Use Van Haateran Images - get it to learn center surrounds. Requires 
 [*] - Optical Blur Computation (or anything that changes objective function - need to see how sensitive it). Possibly a term for different l1 penalties based on where RGC RF is  
 [*] - Experiment with pre-whitened images and higher level of overcompleteness

@@ -26,7 +26,8 @@ class RetinalGanglionCells(object):
     self.eta = 3
 
     # Theano Variables
-    tW = T.dmatrix("tW")
+    tW = theano.shared(self.W, name="tW")
+    self.tW = tW
     tG = T.dmatrix("tG")
     tC_x = T.dmatrix("tC_x")
     tC_nx = T.dmatrix("tC_nx")
@@ -42,17 +43,15 @@ class RetinalGanglionCells(object):
       + T.dot(T.dot(tWtG,tl.ops.matrix_inverse(T.dot(T.dot(tWtG.T, tC_nx), tWtG) + tC_nr)),
       tWtG.T))
     # -H(X|R)
-    H_xr = -0.5*T.log(2*np.pi*np.exp(1)*tl.ops.det(tl.ops.psd(tC_xr)))
+    H_xr = -0.5*T.log(2*np.pi*T.exp(1)*tl.ops.det(tl.ops.psd(tC_xr)))
     # Do not include tn_r and f0 as they do not affect gradient
     E = H_xr - T.dot(tlambda.T, T.dot(tG, T.dot(tW.T, tx + tn_x)))
-    # Energy gradient w.r.t
-    gE_W = T.grad(E, tW)
-    gE_G = T.grad(E, tG)
+    # Energy gradient w.r.t W, G
+    gE_W,gE_G = T.grad(E, [tW, tG])
 
-
-    self.ce = theano.function([tW,tG,tC_x,tC_nx,tC_nr],H_xr)
-    self.gce_w = theano.function([tW,tG,tC_x,tC_nx,tC_nr,tlambda,tx,tn_x],gE_W)
-    self.gce_g = theano.function([tW,tG,tC_x,tC_nx,tC_nr,tlambda,tx,tn_x],gE_G)
+    self.ce = theano.function([tG,tC_x,tC_nx,tC_nr],H_xr)
+    self.train = theano.function(inputs=[tG,tC_x,tC_nx,tC_nr,tlambda,tx,tn_x], outputs=[E],
+      updates=[(tW, tW + 0.01 * gE_W)])
 
   def r(self, x):
     # Computes neuron's response r to input image x
@@ -69,22 +68,24 @@ class RetinalGanglionCells(object):
     # C_x: Covariance matrix of input data
     (N, M) = np.shape(X) # Dimensions, Images in batch
 
-    update_W = 0
-    update_G = 0
+    #update_W = 0
+    #update_G = 0
     for m in range(M):
       nx = self.sigma_nx*np.random.randn(self.N)
-      update_W = update_W + (1.0/M)*self.gce_w(self.W, self.G(X[:,m], nx), C_x,
-        self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
-      update_G = update_G + (1.0/M)*self.gce_g(self.W, self.G(X[:,m], nx), C_x,
-        self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
+      self.train(self.G(X[:,m], nx), C_x, self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
 
-      self.spikes = self.spikes + self.non_lin.evaluate(self.W, X[:,m] + nx)
+    #  update_W = update_W + (1.0/M)*self.gce_w(self.W, self.G(X[:,m], nx), C_x,
+    #    self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
+    #  update_G = update_G + (1.0/M)*self.gce_g(self.W, self.G(X[:,m], nx), C_x,
+    #    self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
 
-    self.W = self.W + update_W * self.eta/float(M)#- 0.001 * np.sign(self.W)
-    norms = np.apply_along_axis(np.linalg.norm, 0, self.W)
-    self.W = self.W / np.tile(norms,(self.W.shape[0],1))
+    #  self.spikes = self.spikes + self.non_lin.evaluate(self.W, X[:,m] + nx)
 
-    self.non_lin.update(update_G * self.eta/float(M))
+    #self.W = self.W + update_W * self.eta/float(M)#- 0.001 * np.sign(self.W)
+    #norms = np.apply_along_axis(np.linalg.norm, 0, self.W)
+    #self.W = self.W / np.tile(norms,(self.W.shape[0],1))
+
+    #self.non_lin.update(update_G * self.eta/float(M))
 
   def conditional_entropy(self, X, C_x):
     (N, M) = np.shape(X)
@@ -92,7 +93,7 @@ class RetinalGanglionCells(object):
     for m in range(M):
       nx = self.sigma_nx*np.random.randn(self.N)
       #print self.ce(self.W, self.G(X[:,m]), C_x, self.C_nx, self.C_nr)
-      H_xr = H_xr + (1.0/M)*self.ce(self.W, self.G(X[:,m], nx), C_x, self.C_nx, self.C_nr)
+      H_xr = H_xr + (1.0/M)*self.ce(self.G(X[:,m], nx), C_x, self.C_nx, self.C_nr)
     return H_xr
 
 class NonLinearity(object):
@@ -210,9 +211,9 @@ def display(t, W, neurons, side, firing_rate=None, non_lin=None):
   cax = ax3.imshow(image, cmap='jet', vmin=np.min(W), vmax=np.max(W), interpolation="nearest")
   fig.colorbar(cax, ticks=[np.min(W), 0, np.max(W)])
 
-  fig.show()
+  plt.savefig('./figures/t' + str(t))
 
-def run(N=81, neurons=128, batch=100, iterations=10000, BUFF=4):
+def learn(N=81, neurons=128, batch=100, iterations=10000, BUFF=4):
   sz = np.sqrt(N)
   num_images = batch*500
   #IMAGES = extract_patches('../images/vanhateran/', size=N, num_patches=num_images)
@@ -239,5 +240,5 @@ def run(N=81, neurons=128, batch=100, iterations=10000, BUFF=4):
     # print "After update: " + str(retina.conditional_entropy(I, C_x))
 
     if np.mod(t,100) == 0:
-      display(t, retina.W, neurons, np.sqrt(N), firing_rate=retina.spikes/float(batch*(t+1)), non_lin=rect)
+      display(t, retina.W, neurons, np.sqrt(N), firing_rate=retina.spikes/float(batch*(t+1))) #non_lin=rect)
       print "After update -H(X|R) = " + str(retina.conditional_entropy(I, C_x))
