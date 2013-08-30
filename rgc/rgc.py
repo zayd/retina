@@ -26,32 +26,32 @@ class RetinalGanglionCells(object):
     self.eta = 3
 
     # Theano Variables
-    tW = theano.shared(self.W, name="tW")
+    tW = theano.shared(self.W.astype(theano.config.floatX), name="tW")
     self.tW = tW
-    tG = T.dmatrix("tG")
-    tC_x = T.dmatrix("tC_x")
-    tC_nx = T.dmatrix("tC_nx")
-    tC_nr = T.dmatrix("tC_nr")
-    tlambda = T.dvector("tlambda")
-    tx = T.dvector("tx")
-    tn_x = T.dvector("tn_x")
+    tG = T.matrix("tG")
+    tiC_x = T.matrix("tiC_x")
+    tC_nx = T.matrix("tC_nx")
+    tC_nr = T.matrix("tC_nr")
+    tlambda = T.vector("tlambda")
+    tx = T.vector("tx")
+    tn_x = T.vector("tn_x")
 
     # W*G
     tWtG = T.dot(tW,tG)
     # C_x|r
-    tC_xr = tl.ops.matrix_inverse(tl.ops.matrix_inverse(tC_x)
+    tC_xr = tl.ops.matrix_inverse(tiC_x
       + T.dot(T.dot(tWtG,tl.ops.matrix_inverse(T.dot(T.dot(tWtG.T, tC_nx), tWtG) + tC_nr)),
       tWtG.T))
     # -H(X|R)
     H_xr = -0.5*T.log(2*np.pi*T.exp(1)*tl.ops.det(tl.ops.psd(tC_xr)))
-    # Do not include tn_r and f0 as they do not affect gradient
+    # Do not include tn_r and f0 as they do not affect gradient. Penalty over each training image
     E = H_xr - T.dot(tlambda.T, T.dot(tG, T.dot(tW.T, tx + tn_x)))
     # Energy gradient w.r.t W, G
     gE_W,gE_G = T.grad(E, [tW, tG])
 
-    self.ce = theano.function([tG,tC_x,tC_nx,tC_nr],H_xr)
-    self.train = theano.function(inputs=[tG,tC_x,tC_nx,tC_nr,tlambda,tx,tn_x], outputs=[E],
-      updates=[(tW, tW + 0.01 * gE_W)])
+    self.e = theano.function([tG,tiC_x,tC_nx,tC_nr, tlambda, tx, tn_x], E, allow_input_downcast=True)
+    self.train = theano.function(inputs=[tG,tiC_x,tC_nx,tC_nr,tlambda,tx,tn_x], outputs=[E],
+      updates=[(tW, T.dot((tW + 0.001*gE_W),tl.diag(1/T.sqrt(T.sum((tW + 0.001*gE_W)**2, axis=0)))))], mode='ProfileMode', allow_input_downcast=True)
 
   def r(self, x):
     # Computes neuron's response r to input image x
@@ -60,9 +60,10 @@ class RetinalGanglionCells(object):
 
   def G(self, x, noise):
     # Computes first order approximation to input vector x. Individual x's along columns
-    return np.diag(self.non_lin.derivative(self.W,x + noise))
+    # return np.diag(self.non_lin.derivative(self.W,x + noise))
+    return np.eye(self.neurons)
 
-  def update_W(self, X, C_x):
+  def update_W(self, X, iC_x):
     # Computes grad H(X|R) w.r.t. W and updates W over sample of images X
     # X: Sample of images 2-D array. Images by column
     # C_x: Covariance matrix of input data
@@ -72,28 +73,29 @@ class RetinalGanglionCells(object):
     #update_G = 0
     for m in range(M):
       nx = self.sigma_nx*np.random.randn(self.N)
-      self.train(self.G(X[:,m], nx), C_x, self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
+      self.train(self.G(X[:,m], nx), iC_x, self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
+
+    self.W = self.tW.get_value()
 
     #  update_W = update_W + (1.0/M)*self.gce_w(self.W, self.G(X[:,m], nx), C_x,
     #    self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
     #  update_G = update_G + (1.0/M)*self.gce_g(self.W, self.G(X[:,m], nx), C_x,
     #    self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
 
-    #  self.spikes = self.spikes + self.non_lin.evaluate(self.W, X[:,m] + nx)
-
+    self.spikes = self.spikes + self.non_lin.evaluate(self.W, X[:,m] + nx)
     #self.W = self.W + update_W * self.eta/float(M)#- 0.001 * np.sign(self.W)
     #norms = np.apply_along_axis(np.linalg.norm, 0, self.W)
     #self.W = self.W / np.tile(norms,(self.W.shape[0],1))
 
     #self.non_lin.update(update_G * self.eta/float(M))
 
-  def conditional_entropy(self, X, C_x):
+  def conditional_entropy(self, X, iC_x):
     (N, M) = np.shape(X)
     H_xr = 0
     for m in range(M):
       nx = self.sigma_nx*np.random.randn(self.N)
       #print self.ce(self.W, self.G(X[:,m]), C_x, self.C_nx, self.C_nr)
-      H_xr = H_xr + (1.0/M)*self.ce(self.G(X[:,m], nx), C_x, self.C_nx, self.C_nr)
+      H_xr = H_xr + (1.0/M)*self.e(self.G(X[:,m], nx), iC_x, self.C_nx, self.C_nr, self.penalty, X[:,m], nx)
     return H_xr
 
 class NonLinearity(object):
@@ -235,8 +237,13 @@ def learn(N=81, neurons=128, batch=100, iterations=10000, BUFF=4):
       I[:,i] = np.reshape(IMAGES[r:r+sz, c:c+sz, imi-1],N,1)
 
     C_x = cov(I)
+    iC_x = np.linalg.pinv(C_x)
+    #C_x = np.dot(np.dot(D, np.diag(U) + 1e-8*np.eye(N)), D.T)
+    #print np.linalg.cond(C_x)
+    #print np.linalg.det(C_x)
+    #print np.linalg.cond(C_x)
     # print "Before update: " + str(retina.conditional_entropy(I, C_x))
-    retina.update_W(I, C_x)
+    retina.update_W(I, iC_x)
     # print "After update: " + str(retina.conditional_entropy(I, C_x))
 
     if np.mod(t,100) == 0:
